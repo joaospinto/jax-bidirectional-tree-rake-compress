@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jax-bidirectional-tree-rake-compress"
+version = "0.1.0"
+description = "Generic bidirectional rake-compress tree contraction for JAX"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  {name = "Joao Sousa-Pinto", email = "joaospinto@gmail.com"},
+]
+keywords = [
+  "jax",
+  "parallel algorithms",
+  "tree contraction",
+  "rake-compress",
+]
+classifiers = [
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering",
+  "Typing :: Typed",
+]
+dependencies = [
+  "jax>=0.4.35",
+  "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8",
+]
+dev = [
+  "build>=1.2",
+  "pytest>=8",
+  "ruff>=0.9",
+  "twine>=6",
+]
+
+[project.urls]
+Homepage = "https://github.com/joaospinto/jax_bidirectional_tree_rake_compress"
+Documentation = "https://github.com/joaospinto/jax_bidirectional_tree_rake_compress#readme"
+Issues = "https://github.com/joaospinto/jax_bidirectional_tree_rake_compress/issues"
+Source = "https://github.com/joaospinto/jax_bidirectional_tree_rake_compress"
+Changelog = "https://github.com/joaospinto/jax_bidirectional_tree_rake_compress/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+jax_bidirectional_tree_rake_compress = ["py.typed"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"examples/*.py" = ["T201"]
+"benchmarks/*.py" = ["T201"]
+
+[tool.ruff.format]
+docstring-code-format = true
