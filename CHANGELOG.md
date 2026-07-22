@@ -2,6 +2,13 @@
 
 All notable changes will be documented in this file.
 
+## Unreleased
+
+- Internally dependency-level rake--compress operations when this removes
+  substantial global sibling-reduction barriers.
+- Report primitive operation depth and benchmark the adaptive scheduler on
+  delayed high-degree trees.
+
 ## 0.2.0 — 2026-07-22
 
 - Add selectable rake-only contraction schedules while preserving rake–compress

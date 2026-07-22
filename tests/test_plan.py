@@ -35,6 +35,7 @@ def test_star_has_balanced_sibling_reduction() -> None:
     assert stats.num_rounds == 1
     assert stats.num_rakes == num_nodes - 1
     assert stats.num_compressions == 0
+    assert stats.num_operation_levels == 2 + math.ceil(math.log2(num_nodes - 1))
     assert len(plan.rounds[0].rake_reduction_stages) == math.ceil(
         math.log2(num_nodes - 1)
     )
@@ -50,6 +51,71 @@ def test_chain_has_logarithmic_number_of_rounds() -> None:
     assert stats.num_rakes + stats.num_compressions == num_nodes - 1
     assert stats.num_compressions > 0
     assert stats.num_rounds <= 3 * math.ceil(math.log2(num_nodes))
+
+
+def delayed_star(groups: int, width: int) -> list[int]:
+    """Make groups of root paths that finish after successively longer delays."""
+    parents = [-1]
+    for group in range(groups):
+        for _ in range(width):
+            parent = 0
+            for _ in range(2**group):
+                parents.append(parent)
+                parent = len(parents) - 1
+    return parents
+
+
+def test_rake_compress_removes_global_sibling_reduction_barriers() -> None:
+    parents = delayed_star(groups=6, width=16)
+    plan = make_tree_contraction_plan(parents)
+    stats = plan_statistics(plan)
+
+    assert stats.num_operation_levels == 20
+    assert stats.num_operation_levels <= 2 * math.ceil(math.log2(len(parents)))
+
+    node_producers = np.full(plan.num_nodes, -1)
+    path_producers = np.full(plan.num_edges, -1)
+    branch_producers = np.full(stats.num_rakes, -1)
+    removed = [
+        int(node)
+        for level in plan.rounds
+        for node in np.concatenate(
+            (
+                np.asarray(level.rakes[:, 2]),
+                np.asarray(level.compressions[:, 0]),
+            )
+        )
+    ]
+    assert sorted(removed) == list(range(1, len(parents)))
+
+    for level_index, level in enumerate(plan.rounds):
+        rakes = np.asarray(level.rakes)
+        reductions = np.asarray(level.branch_reductions)
+        absorptions = np.asarray(level.branch_absorptions)
+        compressions = np.asarray(level.compressions)
+
+        assert np.all(path_producers[rakes[:, 0]] < level_index)
+        assert np.all(node_producers[rakes[:, 2]] < level_index)
+        assert np.all(branch_producers[reductions] < level_index)
+        assert np.all(node_producers[absorptions[:, 0]] < level_index)
+        assert np.all(branch_producers[absorptions[:, 1]] < level_index)
+        assert np.all(node_producers[compressions[:, 0]] < level_index)
+        assert np.all(path_producers[compressions[:, 1:3]] < level_index)
+
+        rake_writes = set(np.asarray(level.rakes[:, 3]).tolist())
+        reduction_writes = set(np.asarray(level.branch_reductions[:, 0]).tolist())
+        assert rake_writes.isdisjoint(reduction_writes)
+        assert np.unique(np.asarray(level.branch_absorptions[:, 0])).size == len(
+            level.branch_absorptions
+        )
+        assert np.unique(np.asarray(level.compressions[:, 1])).size == len(
+            level.compressions
+        )
+
+        branch_producers[rakes[:, 3]] = level_index
+        branch_producers[reductions[:, 0]] = level_index
+        node_producers[absorptions[:, 0]] = level_index
+        path_producers[compressions[:, 1]] = level_index
 
 
 @pytest.mark.parametrize(

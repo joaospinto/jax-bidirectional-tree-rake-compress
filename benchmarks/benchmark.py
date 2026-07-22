@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import statistics
 import time
 from collections.abc import Callable
@@ -70,11 +71,35 @@ def comb(nodes: int) -> list[int]:
     return parents
 
 
+def delayed_star(nodes: int) -> list[int]:
+    """Root paths in groups whose messages become ready at different rounds."""
+    if nodes == 1:
+        return [-1]
+    groups = max(1, int(math.log2(nodes)) // 2)
+    nodes_per_width = 2**groups - 1
+    width = max(1, (nodes - 1) // nodes_per_width)
+    parents = [-1]
+    for group in range(groups):
+        for _ in range(width):
+            parent = 0
+            for _ in range(2**group):
+                parents.append(parent)
+                parent = len(parents) - 1
+    parents.extend([0] * (nodes - len(parents)))
+    return parents
+
+
 TOPOLOGIES: dict[str, Callable[[int], list[int]]] = {
     "chain": chain,
     "balanced": balanced,
     "comb": comb,
+    "delayed-star": delayed_star,
     "star": star,
+}
+
+SCHEDULES = {
+    "rake-compress": jtrc.ContractionSchedule.RAKE_COMPRESS,
+    "rake-only": jtrc.ContractionSchedule.RAKE_ONLY,
 }
 
 
@@ -98,11 +123,18 @@ def measure(function, arguments, repeats: int) -> tuple[float, float]:
 
 
 def benchmark_case(
-    topology: str, nodes: int, dimension: int, repeats: int
-) -> tuple[float, int, float, float]:
+    topology: str,
+    schedule: str,
+    nodes: int,
+    dimension: int,
+    repeats: int,
+) -> tuple[float, int, int, float, float]:
     start = time.perf_counter()
-    plan = jtrc.make_tree_contraction_plan(TOPOLOGIES[topology](nodes))
+    plan = jtrc.make_tree_contraction_plan(
+        TOPOLOGIES[topology](nodes), schedule=SCHEDULES[schedule]
+    )
     setup_ms = 1e3 * (time.perf_counter() - start)
+    stats = jtrc.plan_statistics(plan)
     key = jax.random.key(nodes + dimension)
     matrix_key, offset_key, root_key = jax.random.split(key, 3)
     matrices = jnp.eye(dimension)[None, :, :] + 0.01 * jax.random.normal(
@@ -121,7 +153,13 @@ def benchmark_case(
     first_ms, execution_ms = measure(
         run, (dummy_nodes, (matrices, offsets), root), repeats
     )
-    return setup_ms, len(plan.rounds), first_ms, execution_ms
+    return (
+        setup_ms,
+        stats.num_rounds,
+        stats.num_operation_levels,
+        first_ms,
+        execution_ms,
+    )
 
 
 def main() -> None:
@@ -132,26 +170,35 @@ def main() -> None:
     parser.add_argument(
         "--topologies", nargs="+", choices=TOPOLOGIES, default=list(TOPOLOGIES)
     )
+    parser.add_argument(
+        "--schedules",
+        nargs="+",
+        choices=SCHEDULES,
+        default=["rake-compress"],
+    )
     args = parser.parse_args()
 
     print("device:", jax.devices()[0])
     print("dimension:", args.dimension)
     print()
     header = (
-        f"{'topology':<10} {'nodes':>7} {'rounds':>7} "
+        f"{'schedule':<18} {'topology':<12} {'nodes':>7} "
+        f"{'rounds':>7} {'levels':>7} "
         f"{'setup ms':>11} {'compile+first ms':>18} {'execute ms':>12}"
     )
     print(header)
     print("-" * len(header))
     for nodes in args.nodes:
         for topology in args.topologies:
-            setup_ms, rounds, first_ms, execution_ms = benchmark_case(
-                topology, nodes, args.dimension, args.repeats
-            )
-            print(
-                f"{topology:<10} {nodes:>7} {rounds:>7} "
-                f"{setup_ms:>11.3f} {first_ms:>18.3f} {execution_ms:>12.3f}"
-            )
+            for schedule in args.schedules:
+                setup_ms, rounds, levels, first_ms, execution_ms = benchmark_case(
+                    topology, schedule, nodes, args.dimension, args.repeats
+                )
+                print(
+                    f"{schedule:<18} {topology:<12} {nodes:>7} "
+                    f"{rounds:>7} {levels:>7} {setup_ms:>11.3f} "
+                    f"{first_ms:>18.3f} {execution_ms:>12.3f}"
+                )
 
 
 if __name__ == "__main__":

@@ -35,6 +35,21 @@ class ContractionRound(NamedTuple):
     rake_parents: jnp.ndarray
 
 
+class _DependencyLevel(NamedTuple):
+    """Mutually independent primitive operations at one dependency level.
+
+    ``rakes`` contains ``(edge, parent, leaf, branch)`` records,
+    ``branch_reductions`` contains ``(destination, source)`` branch slots,
+    ``branch_absorptions`` contains ``(parent, branch)`` records, and
+    ``compressions`` uses the same schema as :class:`ContractionRound`.
+    """
+
+    rakes: jnp.ndarray
+    branch_reductions: jnp.ndarray
+    branch_absorptions: jnp.ndarray
+    compressions: jnp.ndarray
+
+
 class TreeContractionPlan(NamedTuple):
     """A topology-only contraction plan represented entirely as a PyTree."""
 
@@ -42,7 +57,7 @@ class TreeContractionPlan(NamedTuple):
     edge_parents: jnp.ndarray
     edge_children: jnp.ndarray
     root: jnp.ndarray
-    rounds: tuple[ContractionRound, ...]
+    rounds: tuple[ContractionRound | _DependencyLevel, ...]
 
     @property
     def num_nodes(self) -> int:
@@ -63,6 +78,23 @@ class PlanStatistics(NamedTuple):
     num_compressions: int
     max_rakes_per_round: int
     max_compressions_per_round: int
+    num_operation_levels: int
+
+
+HostRound = tuple[
+    NDArray[np.int32],
+    NDArray[np.int32],
+    list[NDArray[np.int32]],
+    NDArray[np.int32],
+    NDArray[np.int32],
+]
+
+
+class _HostDependencyLevel(NamedTuple):
+    rakes: NDArray[np.int32]
+    branch_reductions: NDArray[np.int32]
+    branch_absorptions: NDArray[np.int32]
+    compressions: NDArray[np.int32]
 
 
 def _normalize_parents(
@@ -156,6 +188,148 @@ def _message_reduction_plan(
     return stages, roots, parents
 
 
+def _dependency_level_plan(
+    num_nodes: int,
+    num_edges: int,
+    host_rounds: Sequence[HostRound],
+) -> tuple[_HostDependencyLevel, ...]:
+    """Schedule rake--compress primitives at their earliest dependency level."""
+
+    node_producers = np.full(num_nodes, -1, dtype=np.int64)
+    path_producers = np.full(num_edges, -1, dtype=np.int64)
+    branch_producers: list[int] = []
+    levels: list[dict[str, list[tuple[int, ...]]]] = []
+
+    def add(level: int, operation: str, record: tuple[int, ...]) -> None:
+        while len(levels) <= level:
+            levels.append(
+                {
+                    "rakes": [],
+                    "branch_reductions": [],
+                    "branch_absorptions": [],
+                    "compressions": [],
+                }
+            )
+        levels[level][operation].append(record)
+
+    for (
+        rakes,
+        compressions,
+        reduction_stages,
+        reduction_roots,
+        reduction_parents,
+    ) in host_rounds:
+        round_branches = np.arange(
+            len(branch_producers),
+            len(branch_producers) + rakes.shape[0],
+            dtype=np.int64,
+        )
+        for (edge, parent, leaf), branch in zip(rakes, round_branches, strict=True):
+            level = 1 + max(path_producers[edge], node_producers[leaf])
+            branch_producers.append(int(level))
+            add(
+                int(level),
+                "rakes",
+                (int(edge), int(parent), int(leaf), int(branch)),
+            )
+
+        for stage in reduction_stages:
+            for destination, source in stage:
+                destination = int(round_branches[destination])
+                source = int(round_branches[source])
+                level = 1 + max(branch_producers[destination], branch_producers[source])
+                branch_producers[destination] = int(level)
+                add(
+                    int(level),
+                    "branch_reductions",
+                    (destination, source),
+                )
+
+        for root, parent in zip(reduction_roots, reduction_parents, strict=True):
+            branch = int(round_branches[root])
+            parent = int(parent)
+            level = 1 + max(branch_producers[branch], node_producers[parent])
+            node_producers[parent] = int(level)
+            add(int(level), "branch_absorptions", (parent, branch))
+
+        for middle, left_edge, right_edge, parent, child in compressions:
+            level = 1 + max(
+                node_producers[middle],
+                path_producers[left_edge],
+                path_producers[right_edge],
+            )
+            path_producers[left_edge] = int(level)
+            add(
+                int(level),
+                "compressions",
+                (
+                    int(middle),
+                    int(left_edge),
+                    int(right_edge),
+                    int(parent),
+                    int(child),
+                ),
+            )
+
+    return tuple(
+        _HostDependencyLevel(
+            rakes=np.asarray(level["rakes"], dtype=np.int32).reshape(-1, 4),
+            branch_reductions=np.asarray(
+                level["branch_reductions"], dtype=np.int32
+            ).reshape(-1, 2),
+            branch_absorptions=np.asarray(
+                level["branch_absorptions"], dtype=np.int32
+            ).reshape(-1, 2),
+            compressions=np.asarray(level["compressions"], dtype=np.int32).reshape(
+                -1, 5
+            ),
+        )
+        for level in levels
+    )
+
+
+def _materialize_dependency_levels(
+    levels: Sequence[_HostDependencyLevel],
+) -> tuple[_DependencyLevel, ...]:
+    return tuple(
+        _DependencyLevel(*(jnp.asarray(field) for field in level)) for level in levels
+    )
+
+
+def _materialize_rounds(
+    host_rounds: Sequence[HostRound],
+) -> tuple[ContractionRound, ...]:
+    return tuple(
+        ContractionRound(
+            rakes=jnp.asarray(rakes),
+            compressions=jnp.asarray(compressions),
+            rake_reduction_stages=tuple(
+                jnp.asarray(stage) for stage in reduction_stages
+            ),
+            rake_roots=jnp.asarray(reduction_roots),
+            rake_parents=jnp.asarray(reduction_parents),
+        )
+        for (
+            rakes,
+            compressions,
+            reduction_stages,
+            reduction_roots,
+            reduction_parents,
+        ) in host_rounds
+    )
+
+
+def _synchronous_operation_levels(host_rounds: Sequence[HostRound]) -> int:
+    """Return the primitive span of synchronous round execution."""
+    return sum(
+        (1 if rakes.shape[0] else 0)
+        + len(reduction_stages)
+        + (1 if rakes.shape[0] else 0)
+        + (1 if compressions.shape[0] else 0)
+        for rakes, compressions, reduction_stages, _, _ in host_rounds
+    )
+
+
 def make_tree_contraction_plan(
     parents: ArrayLike,
     *,
@@ -169,7 +343,8 @@ def make_tree_contraction_plan(
             self parent unless ``root`` is supplied.
         root: Optional explicit root index.
         schedule: Contraction policy. ``RAKE_COMPRESS`` gives logarithmic-depth
-            parallel contraction; ``RAKE_ONLY`` removes leaves level by level.
+            parallel contraction and ``RAKE_ONLY`` removes leaves level by
+            level.
 
     Returns:
         A JAX PyTree containing only integer topology arrays. Edge summaries
@@ -202,15 +377,7 @@ def make_tree_contraction_plan(
 
     active = np.ones(num_nodes, dtype=np.bool_)
     active_count = num_nodes
-    host_rounds: list[
-        tuple[
-            NDArray[np.int32],
-            NDArray[np.int32],
-            list[NDArray[np.int32]],
-            NDArray[np.int32],
-            NDArray[np.int32],
-        ]
-    ] = []
+    host_rounds: list[HostRound] = []
 
     while active_count > 1:
         rakes: list[tuple[int, int, int]] = []
@@ -276,24 +443,31 @@ def make_tree_contraction_plan(
             )
         )
 
-    rounds = tuple(
-        ContractionRound(
-            rakes=jnp.asarray(rakes),
-            compressions=jnp.asarray(compressions),
-            rake_reduction_stages=tuple(
-                jnp.asarray(stage) for stage in reduction_stages
-            ),
-            rake_roots=jnp.asarray(reduction_roots),
-            rake_parents=jnp.asarray(reduction_parents),
-        )
-        for (
-            rakes,
-            compressions,
-            reduction_stages,
-            reduction_roots,
-            reduction_parents,
-        ) in host_rounds
+    rounds: tuple[ContractionRound | _DependencyLevel, ...]
+    max_reduction_stages = max(
+        (len(reduction_stages) for _, _, reduction_stages, _, _ in host_rounds),
+        default=0,
     )
+    may_have_global_reduction_barriers = (
+        len(host_rounds) > 1 and max_reduction_stages > 1
+    )
+    if (
+        schedule is ContractionSchedule.RAKE_COMPRESS
+        and may_have_global_reduction_barriers
+    ):
+        dependency_levels = _dependency_level_plan(num_nodes, num_edges, host_rounds)
+        synchronous_levels = _synchronous_operation_levels(host_rounds)
+        # Dependency-level execution needs a persistent branch workspace and
+        # finer-grained kernels. Use it only when it removes a non-constant
+        # fraction of the synchronous span. Otherwise the synchronous span is
+        # already within a factor of two of the dependency depth, preserving
+        # the O(log N) bound without paying that overhead on ordinary trees.
+        if 2 * len(dependency_levels) < synchronous_levels:
+            rounds = _materialize_dependency_levels(dependency_levels)
+        else:
+            rounds = _materialize_rounds(host_rounds)
+    else:
+        rounds = _materialize_rounds(host_rounds)
     return TreeContractionPlan(
         parents=jnp.asarray(parent_array, dtype=jnp.int32),
         edge_parents=jnp.asarray(edge_parents),
@@ -308,6 +482,20 @@ def plan_statistics(plan: TreeContractionPlan) -> PlanStatistics:
 
     rake_counts = [round_.rakes.shape[0] for round_ in plan.rounds]
     compression_counts = [round_.compressions.shape[0] for round_ in plan.rounds]
+    dependency_levels = bool(plan.rounds) and isinstance(
+        plan.rounds[0], _DependencyLevel
+    )
+    if dependency_levels:
+        num_operation_levels = len(plan.rounds)
+    else:
+        num_operation_levels = sum(
+            (1 if round_.rakes.shape[0] else 0)
+            + len(round_.rake_reduction_stages)
+            + (1 if round_.rakes.shape[0] else 0)
+            + (1 if round_.compressions.shape[0] else 0)
+            for round_ in plan.rounds
+            if isinstance(round_, ContractionRound)
+        )
     return PlanStatistics(
         num_nodes=plan.num_nodes,
         num_edges=plan.num_edges,
@@ -316,4 +504,5 @@ def plan_statistics(plan: TreeContractionPlan) -> PlanStatistics:
         num_compressions=sum(compression_counts),
         max_rakes_per_round=max(rake_counts, default=0),
         max_compressions_per_round=max(compression_counts, default=0),
+        num_operation_levels=num_operation_levels,
     )

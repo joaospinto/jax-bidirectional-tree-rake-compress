@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from jax_bidirectional_tree_rake_compress import (
+    ContractionSchedule,
     make_tree_contraction_plan,
     tree_contract,
     tree_expand,
@@ -71,9 +72,10 @@ def sequential_affine_broadcast(plan, matrices, offsets, root_value):
         [-1, 0, 0, 1, 1, 3, 2, 6, 6, 8, 3],
     ],
 )
-def test_affine_broadcast_recovery(parents) -> None:
+@pytest.mark.parametrize("schedule", list(ContractionSchedule))
+def test_affine_broadcast_recovery(parents, schedule) -> None:
     dimension = 3
-    plan = make_tree_contraction_plan(parents)
+    plan = make_tree_contraction_plan(parents, schedule=schedule)
     key = jax.random.key(len(parents))
     matrix_key, offset_key, root_key = jax.random.split(key, 3)
     matrices = 0.15 * jax.random.normal(
@@ -99,8 +101,9 @@ def test_affine_broadcast_recovery(parents) -> None:
     np.testing.assert_allclose(actual, expected, rtol=2e-5, atol=2e-5)
 
 
-def test_affine_broadcast_is_differentiable() -> None:
-    plan = make_tree_contraction_plan([-1, 0, 1, 1, 3, 0])
+@pytest.mark.parametrize("schedule", list(ContractionSchedule))
+def test_affine_broadcast_is_differentiable(schedule) -> None:
+    plan = make_tree_contraction_plan([-1, 0, 1, 1, 3, 0], schedule=schedule)
     dimension = 2
     matrices = jnp.tile(jnp.eye(dimension)[None, :, :], (plan.num_edges, 1, 1))
     offsets = jnp.ones((plan.num_edges, dimension))

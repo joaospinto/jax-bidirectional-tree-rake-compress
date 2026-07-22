@@ -59,6 +59,17 @@ def sequential_subtree_sums(parents, values, root):
     return result
 
 
+def delayed_star(groups: int, width: int) -> list[int]:
+    parents = [-1]
+    for group in range(groups):
+        for _ in range(width):
+            parent = 0
+            for _ in range(2**group):
+                parents.append(parent)
+                parent = len(parents) - 1
+    return parents
+
+
 TOPOLOGIES = [
     [-1],
     [-1, 0],
@@ -66,6 +77,7 @@ TOPOLOGIES = [
     [-1, 0, 0, 0, 0, 0, 0, 0],
     [-1, 0, 0, 1, 1, 3, 2, 6, 6, 8, 3],
     [4, 4, 0, 1, -1, 1, 5, 2, 2],
+    delayed_star(groups=4, width=16),
 ]
 
 
@@ -96,8 +108,9 @@ def test_contract_and_recover_subtree_sums(parents, schedule) -> None:
     np.testing.assert_allclose(recovered, expected)
 
 
-def test_plan_can_be_a_dynamic_jitted_argument() -> None:
-    plan = make_tree_contraction_plan([-1, 0, 0, 1, 1, 2, 5])
+@pytest.mark.parametrize("schedule", list(ContractionSchedule))
+def test_plan_can_be_a_dynamic_jitted_argument(schedule) -> None:
+    plan = make_tree_contraction_plan([-1, 0, 0, 1, 1, 2, 5], schedule=schedule)
     values = jnp.arange(plan.num_nodes, dtype=jnp.float32)
     paths = jnp.zeros(plan.num_edges, dtype=jnp.float32)
 
@@ -110,8 +123,9 @@ def test_plan_can_be_a_dynamic_jitted_argument() -> None:
     np.testing.assert_allclose(compiled(plan, values, paths), values.sum())
 
 
-def test_vmap_and_grad() -> None:
-    plan = make_tree_contraction_plan([-1, 0, 0, 1, 1, 2, 5])
+@pytest.mark.parametrize("schedule", list(ContractionSchedule))
+def test_vmap_and_grad(schedule) -> None:
+    plan = make_tree_contraction_plan([-1, 0, 0, 1, 1, 2, 5], schedule=schedule)
     paths = jnp.zeros(plan.num_edges, dtype=jnp.float32)
     batch = jnp.arange(3 * plan.num_nodes, dtype=jnp.float32).reshape(3, plan.num_nodes)
 

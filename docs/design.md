@@ -28,6 +28,14 @@ The particular schedule affects floating-point parenthesization and runtime,
 but a lawful algebra gives the same exact-arithmetic result for every legal
 schedule.
 
+The rake--compress planner also expands the rounds into four kinds of primitive
+operation and records the latest producer of each node, path, and branch slot.
+Each primitive is placed one level after its latest input. When this cuts the
+synchronous primitive span by more than half, the plan uses those levels
+internally. This removes global sibling-reduction barriers: an unrelated
+subtree can advance while a high-degree parent is still combining messages.
+Operations within a level read the same input state and have disjoint writes.
+
 ## 2. Active-tree invariant
 
 At every forward stage:
@@ -41,6 +49,10 @@ At every forward stage:
 The executor stores numerical values in immutable JAX arrays and realizes
 logical mutation with indexed updates. Removed slots may remain physically
 present but are never read as active summaries again.
+
+Internally dependency-leveled execution retains one branch slot per rake. This
+linear workspace allows a message to survive across levels until its
+deterministic reduction and absorption operations become ready.
 
 ## 3. Forward algebra
 
@@ -122,9 +134,12 @@ middle_output = algebra.expand_compress(
 leaf_output = algebra.expand_rake(residual, parent_output)
 ```
 
-Within a reversed round, compressions are undone before rakes because the
-forward order was rake then compress. This ordering matters: the parent of a
-raked leaf may itself have been compressed later in that forward round.
+Within a reversed synchronous round, compressions are undone before rakes
+because the forward order was rake then compress. This ordering matters: the
+parent of a raked leaf may itself have been compressed later in that forward
+round. In an internally dependency-leveled plan, true dependencies put those operations in
+different levels; independent rake and compression recoveries within one
+reversed level read the same boundary-output state and write distinct nodes.
 
 Both surviving boundary outputs are offered to `expand_compress`. An algebra
 may ignore either one.

@@ -120,8 +120,10 @@ node or edge axis, and every value in a role must have the same static shape.
 
 ## Public API
 
-- `make_tree_contraction_plan(parents, root=None)` performs validated CPU
-  preprocessing and returns a JAX PyTree of integer schedule arrays.
+- `make_tree_contraction_plan(parents, root=None, schedule=...)` performs
+  validated CPU preprocessing and returns a JAX PyTree of integer schedule
+  arrays. Rake--compress remains the default and rake-only traversal is an
+  opt-in policy.
 - `tree_contract(plan, nodes, paths, algebra)` returns the root summary and a
   numerical recovery tape.
 - `tree_reduce(...)` returns only the root summary.
@@ -159,6 +161,14 @@ Sibling rakes never race. Messages targeting the same parent are combined by
 a CPU-precomputed balanced reduction before the parent is updated. This makes
 the generic implementation independent of atomic addition and supports any
 compatible associative branch operation.
+
+For rake--compress, planning compares synchronous rounds with the earliest
+legal static levels of the same rake, branch-combination, branch-absorption,
+and compression operations. Dependency levels are used internally only when
+they remove more than half of the synchronous primitive span. This lets work
+in unrelated subtrees proceed without waiting for the largest sibling
+reduction while retaining the lower-overhead round representation on ordinary
+trees.
 
 For bounded-degree trees, the plan has linear work and logarithmic contraction
 depth. High-degree branch reductions are balanced as well; actual device
