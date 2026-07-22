@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from jax_bidirectional_tree_rake_compress import (
+    ContractionExecutor,
     ContractionSchedule,
     make_tree_contraction_plan,
     plan_statistics,
@@ -51,6 +52,90 @@ def test_chain_has_logarithmic_number_of_rounds() -> None:
     assert stats.num_rakes + stats.num_compressions == num_nodes - 1
     assert stats.num_compressions > 0
     assert stats.num_rounds <= 3 * math.ceil(math.log2(num_nodes))
+
+
+@pytest.mark.parametrize(
+    ("executor", "schedule"),
+    (
+        (ContractionExecutor.SCAN, ContractionSchedule.RAKE_ONLY),
+        (ContractionExecutor.ASSOCIATIVE_SCAN, ContractionSchedule.RAKE_COMPRESS),
+    ),
+)
+def test_scan_executors_order_a_permuted_chain(executor, schedule) -> None:
+    plan = make_tree_contraction_plan(
+        [2, 3, 1, -1], schedule=schedule, executor=executor
+    )
+
+    assert np.asarray(plan.chain_nodes).tolist() == [3, 1, 2, 0]
+    assert np.asarray(plan.chain_edges).tolist() == [1, 2, 0]
+    assert plan.rounds == ()
+
+
+@pytest.mark.parametrize(
+    ("parents", "schedule", "expected"),
+    (
+        ([-1, 0, 1], ContractionSchedule.RAKE_ONLY, ContractionExecutor.SCAN),
+        (
+            [-1, 0, 1],
+            ContractionSchedule.RAKE_COMPRESS,
+            ContractionExecutor.ASSOCIATIVE_SCAN,
+        ),
+        (
+            [-1, 0, 0],
+            ContractionSchedule.RAKE_ONLY,
+            ContractionExecutor.UNROLLED,
+        ),
+        (
+            [-1, 0, 0],
+            ContractionSchedule.RAKE_COMPRESS,
+            ContractionExecutor.UNROLLED,
+        ),
+    ),
+)
+def test_auto_executor_selects_from_schedule_and_topology(
+    parents, schedule, expected
+) -> None:
+    plan = make_tree_contraction_plan(
+        parents, schedule=schedule, executor=ContractionExecutor.AUTO
+    )
+
+    assert plan.executor is expected
+
+
+@pytest.mark.parametrize(
+    "executor", (ContractionExecutor.SCAN, ContractionExecutor.ASSOCIATIVE_SCAN)
+)
+@pytest.mark.parametrize("parents", ([-1, 0, 0], [1, -1, 1]))
+def test_scan_executors_reject_non_chain_topologies(executor, parents) -> None:
+    schedule = (
+        ContractionSchedule.RAKE_ONLY
+        if executor is ContractionExecutor.SCAN
+        else ContractionSchedule.RAKE_COMPRESS
+    )
+    with pytest.raises(ValueError, match="require a chain topology"):
+        make_tree_contraction_plan(parents, schedule=schedule, executor=executor)
+
+
+@pytest.mark.parametrize(
+    ("executor", "schedule", "expected"),
+    (
+        (
+            ContractionExecutor.SCAN,
+            ContractionSchedule.RAKE_COMPRESS,
+            "RAKE_ONLY",
+        ),
+        (
+            ContractionExecutor.ASSOCIATIVE_SCAN,
+            ContractionSchedule.RAKE_ONLY,
+            "RAKE_COMPRESS",
+        ),
+    ),
+)
+def test_scan_executors_require_their_corresponding_schedule(
+    executor, schedule, expected
+) -> None:
+    with pytest.raises(ValueError, match=expected):
+        make_tree_contraction_plan([-1, 0], schedule=schedule, executor=executor)
 
 
 def delayed_star(groups: int, width: int) -> list[int]:
@@ -146,6 +231,11 @@ def test_rake_only_schedule_removes_one_level_per_round(
 def test_invalid_schedule_is_rejected_for_single_node_tree() -> None:
     with pytest.raises(TypeError, match="unsupported contraction schedule"):
         make_tree_contraction_plan([-1], schedule="rake-only")  # type: ignore[arg-type]
+
+
+def test_invalid_executor_is_rejected_for_single_node_tree() -> None:
+    with pytest.raises(TypeError, match="unsupported contraction executor"):
+        make_tree_contraction_plan([-1], executor="scan")  # type: ignore[arg-type]
 
 
 def test_plan_is_a_jax_pytree() -> None:

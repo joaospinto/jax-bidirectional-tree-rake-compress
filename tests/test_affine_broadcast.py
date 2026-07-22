@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from jax_bidirectional_tree_rake_compress import (
+    ContractionExecutor,
     ContractionSchedule,
     make_tree_contraction_plan,
     tree_contract,
@@ -119,3 +120,39 @@ def test_affine_broadcast_is_differentiable(schedule) -> None:
     np.testing.assert_allclose(
         gradient, jnp.full((dimension,), plan.num_nodes, dtype=jnp.float32)
     )
+
+
+@pytest.mark.parametrize(
+    ("executor", "schedule"),
+    (
+        (ContractionExecutor.SCAN, ContractionSchedule.RAKE_ONLY),
+        (ContractionExecutor.ASSOCIATIVE_SCAN, ContractionSchedule.RAKE_COMPRESS),
+    ),
+)
+def test_chain_executors_recover_affine_broadcast(executor, schedule) -> None:
+    plan = make_tree_contraction_plan(
+        [2, 3, 1, -1], schedule=schedule, executor=executor
+    )
+    dimension = 3
+    key = jax.random.key(17)
+    matrix_key, offset_key, root_key = jax.random.split(key, 3)
+    matrices = jnp.eye(dimension)[None, :, :] + 0.15 * jax.random.normal(
+        matrix_key, (plan.num_edges, dimension, dimension)
+    )
+    offsets = jax.random.normal(offset_key, (plan.num_edges, dimension))
+    root_value = jax.random.normal(root_key, (dimension,))
+    nodes = jnp.zeros(plan.num_nodes, dtype=jnp.float32)
+    algebra = AffineBroadcastAlgebra()
+
+    def run(node_values, paths, root):
+        _, tape = tree_contract(plan, node_values, paths, algebra)
+        return tree_expand(plan, tape, root, algebra)
+
+    actual = jax.jit(run)(nodes, (matrices, offsets), root_value)
+    expected = sequential_affine_broadcast(
+        plan,
+        np.asarray(matrices),
+        np.asarray(offsets),
+        np.asarray(root_value),
+    )
+    np.testing.assert_allclose(actual, expected, rtol=2e-5, atol=2e-5)

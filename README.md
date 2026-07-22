@@ -120,10 +120,10 @@ node or edge axis, and every value in a role must have the same static shape.
 
 ## Public API
 
-- `make_tree_contraction_plan(parents, root=None, schedule=...)` performs
+- `make_tree_contraction_plan(parents, root=None, schedule=..., executor=...)` performs
   validated CPU preprocessing and returns a JAX PyTree of integer schedule
   arrays. Rake--compress remains the default and rake-only traversal is an
-  opt-in policy.
+  opt-in policy. Executors change only the JAX control-flow representation.
 - `tree_contract(plan, nodes, paths, algebra)` returns the root summary and a
   numerical recovery tape.
 - `tree_reduce(...)` returns only the root summary.
@@ -169,6 +169,14 @@ they remove more than half of the synchronous primitive span. This lets work
 in unrelated subtrees proceed without waiting for the largest sibling
 reduction while retaining the lower-overhead round representation on ordinary
 trees.
+
+Chains also support loop-based executors without introducing another
+contraction policy. `ContractionExecutor.SCAN` executes `RAKE_ONLY` through
+`jax.lax.scan`; `ContractionExecutor.ASSOCIATIVE_SCAN` executes
+`RAKE_COMPRESS` through `jax.lax.associative_scan`. Each executor rejects the
+other schedule and any branching topology. `AUTO` selects those mappings on a
+chain and `UNROLLED` otherwise. The default `UNROLLED` executor continues to
+support both schedules on every rooted tree.
 
 For bounded-degree trees, the plan has linear work and logarithmic contraction
 depth. High-degree branch reductions are balanced as well; actual device

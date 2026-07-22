@@ -73,3 +73,8 @@ all_x = tree_expand(plan, transition_tape, x_root, transition_alg)
 
 The topology arrays are reusable across every pass. Only numerical summaries
 and residual tapes reside in factor/solve calls.
+
+For a chain, use `schedule=RAKE_ONLY` with `executor=SCAN` for a sequential
+solve, or `schedule=RAKE_COMPRESS` with `executor=ASSOCIATIVE_SCAN` for a
+parallel solve. These executor choices only change JAX control flow; branching
+OCPs continue to use the unrolled executor.

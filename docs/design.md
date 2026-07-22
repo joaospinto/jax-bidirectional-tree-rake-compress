@@ -107,7 +107,8 @@ Path composition is generally oriented and need not be commutative.
 ## 4. The contraction tape
 
 `tree_contract` retains the rake and compression residual PyTrees for each
-round. Residuals are chosen by the algebra, not the executor. Examples include:
+round, or as leading-axis arrays for a chain scan. Residuals are chosen by the
+algebra, not the executor. Examples include:
 
 - a completed leaf value;
 - an interval adjacent to a removed middle node;
@@ -171,6 +172,22 @@ Ragged numerical dimensions must be padded or bucketed by shape.
 so an ordinary Python loop over rounds is unrolled while tracing. Work within
 each round remains batched: compiled program size grows with contraction depth,
 not with the number of nodes.
+
+The two chain executors avoid that structural unrolling without adding another
+contraction policy:
+
+- `SCAN` is valid only for `RAKE_ONLY` chains. It executes leaf-to-root rakes
+  and root-to-leaf expansion with `jax.lax.scan`.
+- `ASSOCIATIVE_SCAN` is valid only for `RAKE_COMPRESS` chains. It uses
+  `jax.lax.associative_scan` to compose chain segments and compute the prefix
+  and suffix summaries required for expansion.
+
+Both store the same root-to-leaf chain order in `TreeContractionPlan`; neither
+constructs an alternative public plan or schedule. They reject branching
+topologies and mismatched schedules. The executor enum is static PyTree
+metadata, so one compiled executable has one control-flow implementation.
+`AUTO` resolves to the matching chain executor or to `UNROLLED` during the
+same host topology preprocessing.
 
 Plans can be used in two ways:
 

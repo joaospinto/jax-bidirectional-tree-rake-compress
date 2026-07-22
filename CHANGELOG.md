@@ -2,12 +2,14 @@
 
 All notable changes will be documented in this file.
 
-## Unreleased
+## 0.3.0 — 2026-07-22
 
 - Internally dependency-level rake--compress operations when this removes
   substantial global sibling-reduction barriers.
 - Report primitive operation depth and benchmark the adaptive scheduler on
   delayed high-degree trees.
+- Add chain-only `jax.lax.scan` and `jax.lax.associative_scan` executors for
+  rake-only and rake--compress respectively.
 
 ## 0.2.0 — 2026-07-22
 

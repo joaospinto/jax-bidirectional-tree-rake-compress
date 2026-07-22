@@ -97,9 +97,23 @@ TOPOLOGIES: dict[str, Callable[[int], list[int]]] = {
     "star": star,
 }
 
-SCHEDULES = {
-    "rake-compress": jtrc.ContractionSchedule.RAKE_COMPRESS,
-    "rake-only": jtrc.ContractionSchedule.RAKE_ONLY,
+MODES = {
+    "rake-compress": (
+        jtrc.ContractionSchedule.RAKE_COMPRESS,
+        jtrc.ContractionExecutor.UNROLLED,
+    ),
+    "rake-only": (
+        jtrc.ContractionSchedule.RAKE_ONLY,
+        jtrc.ContractionExecutor.UNROLLED,
+    ),
+    "scan": (
+        jtrc.ContractionSchedule.RAKE_ONLY,
+        jtrc.ContractionExecutor.SCAN,
+    ),
+    "associative-scan": (
+        jtrc.ContractionSchedule.RAKE_COMPRESS,
+        jtrc.ContractionExecutor.ASSOCIATIVE_SCAN,
+    ),
 }
 
 
@@ -124,14 +138,15 @@ def measure(function, arguments, repeats: int) -> tuple[float, float]:
 
 def benchmark_case(
     topology: str,
-    schedule: str,
+    mode: str,
     nodes: int,
     dimension: int,
     repeats: int,
 ) -> tuple[float, int, int, float, float]:
     start = time.perf_counter()
+    schedule, executor = MODES[mode]
     plan = jtrc.make_tree_contraction_plan(
-        TOPOLOGIES[topology](nodes), schedule=SCHEDULES[schedule]
+        TOPOLOGIES[topology](nodes), schedule=schedule, executor=executor
     )
     setup_ms = 1e3 * (time.perf_counter() - start)
     stats = jtrc.plan_statistics(plan)
@@ -171,9 +186,9 @@ def main() -> None:
         "--topologies", nargs="+", choices=TOPOLOGIES, default=list(TOPOLOGIES)
     )
     parser.add_argument(
-        "--schedules",
+        "--modes",
         nargs="+",
-        choices=SCHEDULES,
+        choices=MODES,
         default=["rake-compress"],
     )
     args = parser.parse_args()
@@ -182,7 +197,7 @@ def main() -> None:
     print("dimension:", args.dimension)
     print()
     header = (
-        f"{'schedule':<18} {'topology':<12} {'nodes':>7} "
+        f"{'mode':<18} {'topology':<12} {'nodes':>7} "
         f"{'rounds':>7} {'levels':>7} "
         f"{'setup ms':>11} {'compile+first ms':>18} {'execute ms':>12}"
     )
@@ -190,12 +205,14 @@ def main() -> None:
     print("-" * len(header))
     for nodes in args.nodes:
         for topology in args.topologies:
-            for schedule in args.schedules:
+            for mode in args.modes:
+                if mode in ("scan", "associative-scan") and topology != "chain":
+                    continue
                 setup_ms, rounds, levels, first_ms, execution_ms = benchmark_case(
-                    topology, schedule, nodes, args.dimension, args.repeats
+                    topology, mode, nodes, args.dimension, args.repeats
                 )
                 print(
-                    f"{schedule:<18} {topology:<12} {nodes:>7} "
+                    f"{mode:<18} {topology:<12} {nodes:>7} "
                     f"{rounds:>7} {levels:>7} {setup_ms:>11.3f} "
                     f"{first_ms:>18.3f} {execution_ms:>12.3f}"
                 )

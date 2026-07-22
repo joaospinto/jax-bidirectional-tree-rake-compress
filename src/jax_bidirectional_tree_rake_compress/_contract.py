@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 
 from ._algebra import TreeContractionAlgebra
-from ._plan import TreeContractionPlan, _DependencyLevel
+from ._plan import ContractionExecutor, TreeContractionPlan, _DependencyLevel
 
 PyTree = Any
 RootOutput = TypeVar("RootOutput")
@@ -26,6 +26,13 @@ class ContractionTape(NamedTuple):
     """Residuals consumed by :func:`tree_expand` in reverse round order."""
 
     rounds: tuple[RoundTape, ...]
+
+
+class ChainContractionTape(NamedTuple):
+    """Residual arrays produced by a scan-based chain contraction."""
+
+    rake: PyTree
+    compress: PyTree
 
 
 def _take(tree: PyTree, indices: jax.Array) -> PyTree:
@@ -54,6 +61,30 @@ def _allocate_leading(tree: PyTree, size: int) -> PyTree:
 def _concatenate(trees: tuple[PyTree, ...]) -> PyTree:
     """Concatenate equally structured batched PyTrees along their leading axis."""
     return jax.tree.map(lambda *values: jnp.concatenate(values), *trees)
+
+
+def _rake_values_batch(paths, leaves, algebra):
+    return jax.vmap(algebra.rake)(paths, leaves)
+
+
+def _absorb_values_batch(nodes, messages, algebra):
+    return jax.vmap(algebra.absorb_branch)(nodes, messages)
+
+
+def _compress_values_batch(left_paths, middle_nodes, right_paths, algebra):
+    return jax.vmap(algebra.compress)(left_paths, middle_nodes, right_paths)
+
+
+def _expand_rake_batch(residuals, outputs, parents, algebra):
+    return jax.vmap(algebra.expand_rake)(residuals, _take(outputs, parents))
+
+
+def _expand_compress_batch(residuals, outputs, parents, children, algebra):
+    return jax.vmap(algebra.expand_compress)(
+        residuals,
+        _take(outputs, parents),
+        _take(outputs, children),
+    )
 
 
 def _validate_leading_axis(name: str, tree: PyTree, size: int) -> None:
@@ -207,12 +238,96 @@ def _tree_contract_dependency_levels(
     return _take(nodes, plan.root), ContractionTape(tuple(tape))
 
 
+def _tree_contract_scan(
+    plan: TreeContractionPlan,
+    node_summaries: PyTree,
+    path_summaries: PyTree,
+    algebra: TreeContractionAlgebra[Any, Any, Any, Any, Any, Any],
+) -> tuple[PyTree, ChainContractionTape]:
+    if plan.num_nodes == 1:
+        return _take(node_summaries, plan.root), ChainContractionTape((), ())
+
+    edges = plan.chain_edges[::-1]
+    parents = plan.chain_nodes[-2::-1]
+    leaves = plan.chain_nodes[:0:-1]
+
+    def scan_step(nodes, instruction):
+        edge, parent, leaf = instruction
+        message, residual = algebra.rake(
+            _take(path_summaries, edge),
+            _take(nodes, leaf),
+        )
+        updated_parent = algebra.absorb_branch(_take(nodes, parent), message)
+        return _set(nodes, parent, updated_parent), residual
+
+    nodes, rake_residuals = jax.lax.scan(
+        scan_step,
+        node_summaries,
+        (edges, parents, leaves),
+    )
+    return _take(nodes, plan.root), ChainContractionTape(rake_residuals, ())
+
+
+def _tree_contract_associative_scan(
+    plan: TreeContractionPlan,
+    node_summaries: PyTree,
+    path_summaries: PyTree,
+    algebra: TreeContractionAlgebra[Any, Any, Any, Any, Any, Any],
+) -> tuple[PyTree, ChainContractionTape]:
+    if plan.num_nodes == 1:
+        return _take(node_summaries, plan.root), ChainContractionTape((), ())
+
+    nodes = _take(node_summaries, plan.chain_nodes)
+    paths = _take(path_summaries, plan.chain_edges)
+    segment_ends = jax.tree.map(lambda value: value[1:], nodes)
+
+    def combine_segments(left, right):
+        left_paths, left_ends = left
+        right_paths, right_ends = right
+        combined, _ = _compress_values_batch(
+            left_paths, left_ends, right_paths, algebra
+        )
+        return combined, right_ends
+
+    prefixes, _ = jax.lax.associative_scan(combine_segments, (paths, segment_ends))
+    reversed_paths = jax.tree.map(lambda value: value[::-1], paths)
+    reversed_ends = jax.tree.map(lambda value: value[::-1], segment_ends)
+    reversed_suffixes, _ = jax.lax.associative_scan(
+        lambda left, right: combine_segments(right, left),
+        (reversed_paths, reversed_ends),
+    )
+    suffixes = jax.tree.map(lambda value: value[::-1], reversed_suffixes)
+
+    messages, rake_residual = _rake_values_batch(
+        jax.tree.map(lambda value: value[-1:], prefixes),
+        jax.tree.map(lambda value: value[-1:], nodes),
+        algebra,
+    )
+    root_summary = _absorb_values_batch(
+        jax.tree.map(lambda value: value[:1], nodes), messages, algebra
+    )
+
+    if plan.num_nodes > 2:
+        _, compress_residual = _compress_values_batch(
+            jax.tree.map(lambda value: value[:-1], prefixes),
+            jax.tree.map(lambda value: value[1:-1], nodes),
+            jax.tree.map(lambda value: value[1:], suffixes),
+            algebra,
+        )
+    else:
+        compress_residual = ()
+
+    return jax.tree.map(lambda value: value[0], root_summary), ChainContractionTape(
+        rake_residual, compress_residual
+    )
+
+
 def tree_contract(
     plan: TreeContractionPlan,
     node_summaries: PyTree,
     path_summaries: PyTree,
     algebra: TreeContractionAlgebra[Any, Any, Any, Any, Any, Any],
-) -> tuple[PyTree, ContractionTape]:
+) -> tuple[PyTree, ContractionTape | ChainContractionTape]:
     """Contract a rooted tree to its root using a user-defined algebra.
 
     This function is deliberately not decorated with :func:`jax.jit`; callers
@@ -223,6 +338,12 @@ def tree_contract(
     _validate_leading_axis("node_summaries", node_summaries, plan.num_nodes)
     _validate_leading_axis("path_summaries", path_summaries, plan.num_edges)
 
+    if plan.executor is ContractionExecutor.SCAN:
+        return _tree_contract_scan(plan, node_summaries, path_summaries, algebra)
+    if plan.executor is ContractionExecutor.ASSOCIATIVE_SCAN:
+        return _tree_contract_associative_scan(
+            plan, node_summaries, path_summaries, algebra
+        )
     dependency_levels = bool(plan.rounds) and isinstance(
         plan.rounds[0], _DependencyLevel
     )
@@ -327,16 +448,64 @@ def _tree_expand_dependency_levels(
     return outputs
 
 
+def _tree_expand_scan(
+    plan: TreeContractionPlan,
+    tape: ChainContractionTape,
+    outputs: PyTree,
+    algebra: TreeContractionAlgebra[Any, Any, Any, Any, Any, Any],
+) -> PyTree:
+    if plan.num_nodes == 1:
+        return outputs
+
+    residuals = jax.tree.map(lambda value: value[::-1], tape.rake)
+
+    def scan_step(current_outputs, instruction):
+        residual, parent, leaf = instruction
+        recovered = algebra.expand_rake(
+            residual,
+            _take(current_outputs, parent),
+        )
+        return _set(current_outputs, leaf, recovered), None
+
+    outputs, _ = jax.lax.scan(
+        scan_step,
+        outputs,
+        (residuals, plan.chain_nodes[:-1], plan.chain_nodes[1:]),
+    )
+    return outputs
+
+
+def _tree_expand_associative_scan(
+    plan: TreeContractionPlan,
+    tape: ChainContractionTape,
+    outputs: PyTree,
+    algebra: TreeContractionAlgebra[Any, Any, Any, Any, Any, Any],
+) -> PyTree:
+    if plan.num_nodes == 1:
+        return outputs
+
+    leaf_output = _expand_rake_batch(tape.rake, outputs, plan.chain_nodes[:1], algebra)
+    outputs = _set(outputs, plan.chain_nodes[-1:], leaf_output)
+
+    if plan.num_nodes > 2:
+        num_internal = plan.num_nodes - 2
+        roots = jnp.broadcast_to(plan.chain_nodes[0], (num_internal,))
+        leaves = jnp.broadcast_to(plan.chain_nodes[-1], (num_internal,))
+        internal_outputs = _expand_compress_batch(
+            tape.compress, outputs, roots, leaves, algebra
+        )
+        outputs = _set(outputs, plan.chain_nodes[1:-1], internal_outputs)
+
+    return outputs
+
+
 def tree_expand(
     plan: TreeContractionPlan,
-    tape: ContractionTape,
+    tape: ContractionTape | ChainContractionTape,
     root_output: PyTree,
     algebra: TreeContractionAlgebra[Any, Any, Any, Any, Any, Any],
 ) -> PyTree:
     """Reverse a contraction and recover one output per original node."""
-
-    if len(tape.rounds) != len(plan.rounds):
-        raise ValueError("tape and plan have different numbers of contraction rounds")
 
     outputs = jax.tree.map(
         lambda value: (
@@ -346,6 +515,19 @@ def tree_expand(
         ),
         root_output,
     )
+    if plan.executor is ContractionExecutor.SCAN:
+        if not isinstance(tape, ChainContractionTape):
+            raise TypeError("a scan plan requires a ChainContractionTape")
+        return _tree_expand_scan(plan, tape, outputs, algebra)
+    if plan.executor is ContractionExecutor.ASSOCIATIVE_SCAN:
+        if not isinstance(tape, ChainContractionTape):
+            raise TypeError("an associative-scan plan requires a ChainContractionTape")
+        return _tree_expand_associative_scan(plan, tape, outputs, algebra)
+
+    if not isinstance(tape, ContractionTape):
+        raise TypeError("an unrolled plan requires a ContractionTape")
+    if len(tape.rounds) != len(plan.rounds):
+        raise ValueError("tape and plan have different numbers of contraction rounds")
     dependency_levels = bool(plan.rounds) and isinstance(
         plan.rounds[0], _DependencyLevel
     )

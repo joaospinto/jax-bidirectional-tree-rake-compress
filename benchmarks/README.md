@@ -18,8 +18,10 @@ python benchmarks/benchmark.py \
   --repeats 50
 ```
 
-Use `--schedules rake-compress rake-only` to select contraction policies. The
-`rounds` column reports stored execution batches and `levels` reports the
+Use `--modes rake-compress rake-only scan associative-scan` to compare
+execution modes. Scan modes are chain-only and imply their corresponding
+schedule: ordinary scan is rake-only and associative scan is rake--compress.
+The `rounds` column reports logical contraction rounds and `levels` reports
 primitive dependency depth; they differ for synchronous plans because one
 round can contain several sibling-reduction stages.
 

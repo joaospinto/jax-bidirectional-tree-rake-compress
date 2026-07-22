@@ -4,6 +4,7 @@ from importlib.metadata import version as _distribution_version
 
 from ._algebra import TreeContractionAlgebra
 from ._contract import (
+    ChainContractionTape,
     ContractionTape,
     RoundTape,
     tree_contract,
@@ -12,6 +13,7 @@ from ._contract import (
     tree_reduce,
 )
 from ._plan import (
+    ContractionExecutor,
     ContractionRound,
     ContractionSchedule,
     PlanStatistics,
@@ -23,6 +25,8 @@ from ._plan import (
 __version__ = _distribution_version("jax-bidirectional-tree-rake-compress")
 
 __all__ = [
+    "ChainContractionTape",
+    "ContractionExecutor",
     "ContractionRound",
     "ContractionSchedule",
     "ContractionTape",

@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from jax_bidirectional_tree_rake_compress import (
+    ContractionExecutor,
     ContractionSchedule,
     make_tree_contraction_plan,
     tree_contract,
@@ -80,6 +81,11 @@ TOPOLOGIES = [
     delayed_star(groups=4, width=16),
 ]
 
+CHAIN_EXECUTORS = (
+    (ContractionExecutor.SCAN, ContractionSchedule.RAKE_ONLY),
+    (ContractionExecutor.ASSOCIATIVE_SCAN, ContractionSchedule.RAKE_COMPRESS),
+)
+
 
 @pytest.mark.parametrize("parents", TOPOLOGIES)
 @pytest.mark.parametrize("schedule", list(ContractionSchedule))
@@ -106,6 +112,48 @@ def test_contract_and_recover_subtree_sums(parents, schedule) -> None:
     )
     np.testing.assert_allclose(root, expected[int(plan.root)])
     np.testing.assert_allclose(recovered, expected)
+
+
+@pytest.mark.parametrize("parents", ([-1], [-1, 0, 1, 2, 3], [2, 3, 1, -1]))
+@pytest.mark.parametrize(("executor", "schedule"), CHAIN_EXECUTORS)
+def test_chain_executors_contract_and_recover_subtree_sums(
+    parents, executor, schedule
+) -> None:
+    plan = make_tree_contraction_plan(parents, schedule=schedule, executor=executor)
+    values = jnp.arange(1, len(parents) + 1, dtype=jnp.float32)
+    paths = jnp.zeros(plan.num_edges, dtype=jnp.float32)
+    algebra = SubtreeSumAlgebra()
+
+    def run(node_values, edge_values):
+        root, tape = tree_contract(plan, node_values, edge_values, algebra)
+        return root, tree_expand(plan, tape, root, algebra)
+
+    root, recovered = jax.jit(run)(values, paths)
+    expected = sequential_subtree_sums(
+        np.asarray(parents), np.asarray(values), int(plan.root)
+    )
+    np.testing.assert_allclose(root, expected[int(plan.root)])
+    np.testing.assert_allclose(recovered, expected)
+
+
+@pytest.mark.parametrize(("executor", "schedule"), CHAIN_EXECUTORS)
+def test_chain_executor_supports_dynamic_plans_vmap_and_grad(
+    executor, schedule
+) -> None:
+    plan = make_tree_contraction_plan(
+        [-1, 0, 1, 2, 3], schedule=schedule, executor=executor
+    )
+    paths = jnp.zeros(plan.num_edges, dtype=jnp.float32)
+    batch = jnp.arange(3 * plan.num_nodes, dtype=jnp.float32).reshape(3, plan.num_nodes)
+
+    def reduce_one(dynamic_plan, values):
+        return tree_reduce(dynamic_plan, values, paths, SubtreeSumAlgebra())
+
+    roots = jax.jit(jax.vmap(reduce_one, in_axes=(None, 0)))(plan, batch)
+    gradient = jax.jit(jax.grad(reduce_one, argnums=1))(plan, batch[0])
+
+    np.testing.assert_allclose(roots, batch.sum(axis=1))
+    np.testing.assert_allclose(gradient, jnp.ones(plan.num_nodes))
 
 
 @pytest.mark.parametrize("schedule", list(ContractionSchedule))

@@ -341,7 +341,7 @@ wheels = [
 
 [[package]]
 name = "jax-bidirectional-tree-rake-compress"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "jax", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import Enum, auto
 from typing import NamedTuple
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -17,6 +19,15 @@ class ContractionSchedule(Enum):
 
     RAKE_COMPRESS = auto()
     RAKE_ONLY = auto()
+
+
+class ContractionExecutor(Enum):
+    """JAX control-flow implementation used to execute a contraction."""
+
+    AUTO = auto()
+    UNROLLED = auto()
+    SCAN = auto()
+    ASSOCIATIVE_SCAN = auto()
 
 
 class ContractionRound(NamedTuple):
@@ -50,7 +61,9 @@ class _DependencyLevel(NamedTuple):
     compressions: jnp.ndarray
 
 
-class TreeContractionPlan(NamedTuple):
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True, eq=False)
+class TreeContractionPlan:
     """A topology-only contraction plan represented entirely as a PyTree."""
 
     parents: jnp.ndarray
@@ -58,6 +71,9 @@ class TreeContractionPlan(NamedTuple):
     edge_children: jnp.ndarray
     root: jnp.ndarray
     rounds: tuple[ContractionRound | _DependencyLevel, ...]
+    chain_nodes: jnp.ndarray
+    chain_edges: jnp.ndarray
+    executor: ContractionExecutor
 
     @property
     def num_nodes(self) -> int:
@@ -66,6 +82,22 @@ class TreeContractionPlan(NamedTuple):
     @property
     def num_edges(self) -> int:
         return self.edge_children.shape[0]
+
+    def tree_flatten(self):
+        children = (
+            self.parents,
+            self.edge_parents,
+            self.edge_children,
+            self.root,
+            self.rounds,
+            self.chain_nodes,
+            self.chain_edges,
+        )
+        return children, self.executor
+
+    @classmethod
+    def tree_unflatten(cls, executor, children):
+        return cls(*children, executor=executor)
 
 
 class PlanStatistics(NamedTuple):
@@ -186,6 +218,32 @@ def _message_reduction_plan(
     )
     parents = np.asarray(ordered_parents, dtype=np.int32)
     return stages, roots, parents
+
+
+def _make_chain_order(
+    parents: NDArray[np.int64],
+    root: int,
+    edge_children: NDArray[np.int32],
+) -> tuple[NDArray[np.int32], NDArray[np.int32]]:
+    """Order a rooted chain from its root to its leaf."""
+    child_by_parent = np.full(parents.size, -1, dtype=np.int32)
+    for child, parent in enumerate(parents):
+        if child == root:
+            continue
+        if child_by_parent[parent] >= 0:
+            raise ValueError("scan executors require a chain topology")
+        child_by_parent[parent] = child
+
+    chain_nodes = [root]
+    while child_by_parent[chain_nodes[-1]] >= 0:
+        chain_nodes.append(int(child_by_parent[chain_nodes[-1]]))
+    if len(chain_nodes) != parents.size:
+        raise ValueError("scan executors require a chain topology")
+
+    incoming_edge = np.full(parents.size, -1, dtype=np.int32)
+    incoming_edge[edge_children] = np.arange(edge_children.size, dtype=np.int32)
+    chain_nodes_array = np.asarray(chain_nodes, dtype=np.int32)
+    return chain_nodes_array, incoming_edge[chain_nodes_array[1:]]
 
 
 def _dependency_level_plan(
@@ -335,6 +393,7 @@ def make_tree_contraction_plan(
     *,
     root: int | None = None,
     schedule: ContractionSchedule = ContractionSchedule.RAKE_COMPRESS,
+    executor: ContractionExecutor = ContractionExecutor.UNROLLED,
 ) -> TreeContractionPlan:
     """Precompute a deterministic rake--compress plan on the CPU.
 
@@ -345,6 +404,12 @@ def make_tree_contraction_plan(
         schedule: Contraction policy. ``RAKE_COMPRESS`` gives logarithmic-depth
             parallel contraction and ``RAKE_ONLY`` removes leaves level by
             level.
+        executor: JAX control-flow implementation. ``SCAN`` executes a
+            rake-only chain through :func:`jax.lax.scan`, while
+            ``ASSOCIATIVE_SCAN`` executes a rake--compress chain through
+            :func:`jax.lax.associative_scan`. ``AUTO`` selects the corresponding
+            scan on chains and ``UNROLLED`` otherwise. ``UNROLLED`` supports
+            every topology and schedule.
 
     Returns:
         A JAX PyTree containing only integer topology arrays. Edge summaries
@@ -354,6 +419,8 @@ def make_tree_contraction_plan(
 
     if not isinstance(schedule, ContractionSchedule):
         raise TypeError(f"unsupported contraction schedule: {schedule!r}")
+    if not isinstance(executor, ContractionExecutor):
+        raise TypeError(f"unsupported contraction executor: {executor!r}")
 
     parent_array, root = _normalize_parents(parents, root)
     num_nodes = parent_array.size
@@ -362,6 +429,41 @@ def make_tree_contraction_plan(
     )
     edge_parents = parent_array[edge_children].astype(np.int32, copy=False)
     num_edges = edge_children.size
+    is_chain = bool(np.all(np.bincount(edge_parents, minlength=num_nodes) <= 1))
+    if executor is ContractionExecutor.AUTO:
+        if is_chain:
+            executor = (
+                ContractionExecutor.SCAN
+                if schedule is ContractionSchedule.RAKE_ONLY
+                else ContractionExecutor.ASSOCIATIVE_SCAN
+            )
+        else:
+            executor = ContractionExecutor.UNROLLED
+    common = dict(
+        parents=jnp.asarray(parent_array, dtype=jnp.int32),
+        edge_parents=jnp.asarray(edge_parents),
+        edge_children=jnp.asarray(edge_children),
+        root=jnp.asarray(root, dtype=jnp.int32),
+        executor=executor,
+    )
+
+    if executor is not ContractionExecutor.UNROLLED:
+        expected_schedule = (
+            ContractionSchedule.RAKE_ONLY
+            if executor is ContractionExecutor.SCAN
+            else ContractionSchedule.RAKE_COMPRESS
+        )
+        if schedule is not expected_schedule:
+            raise ValueError(
+                f"{executor.name} requires schedule={expected_schedule.name}"
+            )
+        chain_nodes, chain_edges = _make_chain_order(parent_array, root, edge_children)
+        return TreeContractionPlan(
+            **common,
+            rounds=(),
+            chain_nodes=jnp.asarray(chain_nodes),
+            chain_edges=jnp.asarray(chain_edges),
+        )
 
     incoming = np.full(num_nodes, -1, dtype=np.int64)
     active_parent = np.full(num_nodes, -1, dtype=np.int64)
@@ -469,16 +571,39 @@ def make_tree_contraction_plan(
     else:
         rounds = _materialize_rounds(host_rounds)
     return TreeContractionPlan(
-        parents=jnp.asarray(parent_array, dtype=jnp.int32),
-        edge_parents=jnp.asarray(edge_parents),
-        edge_children=jnp.asarray(edge_children),
-        root=jnp.asarray(root, dtype=jnp.int32),
+        **common,
         rounds=rounds,
+        chain_nodes=jnp.empty(0, dtype=jnp.int32),
+        chain_edges=jnp.empty(0, dtype=jnp.int32),
     )
 
 
 def plan_statistics(plan: TreeContractionPlan) -> PlanStatistics:
     """Return contraction counts using only statically known array shapes."""
+
+    if plan.executor is ContractionExecutor.SCAN:
+        return PlanStatistics(
+            num_nodes=plan.num_nodes,
+            num_edges=plan.num_edges,
+            num_rounds=plan.num_edges,
+            num_rakes=plan.num_edges,
+            num_compressions=0,
+            max_rakes_per_round=min(plan.num_edges, 1),
+            max_compressions_per_round=0,
+            num_operation_levels=2 * plan.num_edges,
+        )
+    if plan.executor is ContractionExecutor.ASSOCIATIVE_SCAN:
+        depth = 0 if plan.num_edges == 0 else plan.num_edges.bit_length() + 1
+        return PlanStatistics(
+            num_nodes=plan.num_nodes,
+            num_edges=plan.num_edges,
+            num_rounds=depth,
+            num_rakes=min(plan.num_edges, 1),
+            num_compressions=max(plan.num_edges - 1, 0),
+            max_rakes_per_round=min(plan.num_edges, 1),
+            max_compressions_per_round=plan.num_edges // 2,
+            num_operation_levels=depth,
+        )
 
     rake_counts = [round_.rakes.shape[0] for round_ in plan.rounds]
     compression_counts = [round_.compressions.shape[0] for round_ in plan.rounds]
