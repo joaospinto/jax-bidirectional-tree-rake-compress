@@ -13,6 +13,7 @@ from ._contract import (
 )
 from ._plan import (
     ContractionRound,
+    ContractionSchedule,
     PlanStatistics,
     TreeContractionPlan,
     make_tree_contraction_plan,
@@ -23,6 +24,7 @@ __version__ = _distribution_version("jax-bidirectional-tree-rake-compress")
 
 __all__ = [
     "ContractionRound",
+    "ContractionSchedule",
     "ContractionTape",
     "PlanStatistics",
     "RoundTape",

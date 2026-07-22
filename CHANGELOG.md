@@ -2,6 +2,11 @@
 
 All notable changes will be documented in this file.
 
+## 0.2.0 — 2026-07-22
+
+- Add selectable rake-only contraction schedules while preserving rake–compress
+  as the default.
+
 ## 0.1.0 — 2026-07-20
 
 - Add validated CPU preprocessing for deterministic rake–compress plans.

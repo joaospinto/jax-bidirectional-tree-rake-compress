@@ -4,11 +4,19 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
+from enum import Enum, auto
 from typing import NamedTuple
 
 import jax.numpy as jnp
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
+
+
+class ContractionSchedule(Enum):
+    """Host-side policy used to construct tree-contraction rounds."""
+
+    RAKE_COMPRESS = auto()
+    RAKE_ONLY = auto()
 
 
 class ContractionRound(NamedTuple):
@@ -149,7 +157,10 @@ def _message_reduction_plan(
 
 
 def make_tree_contraction_plan(
-    parents: ArrayLike, *, root: int | None = None
+    parents: ArrayLike,
+    *,
+    root: int | None = None,
+    schedule: ContractionSchedule = ContractionSchedule.RAKE_COMPRESS,
 ) -> TreeContractionPlan:
     """Precompute a deterministic rake--compress plan on the CPU.
 
@@ -157,12 +168,17 @@ def make_tree_contraction_plan(
         parents: Parent index for every node. The root must have a negative or
             self parent unless ``root`` is supplied.
         root: Optional explicit root index.
+        schedule: Contraction policy. ``RAKE_COMPRESS`` gives logarithmic-depth
+            parallel contraction; ``RAKE_ONLY`` removes leaves level by level.
 
     Returns:
         A JAX PyTree containing only integer topology arrays. Edge summaries
         are ordered by ``plan.edge_children``: one incoming edge for every
         non-root node.
     """
+
+    if not isinstance(schedule, ContractionSchedule):
+        raise TypeError(f"unsupported contraction schedule: {schedule!r}")
 
     parent_array, root = _normalize_parents(parents, root)
     num_nodes = parent_array.size
@@ -213,18 +229,19 @@ def make_tree_contraction_plan(
             active[child] = False
             active_count -= 1
 
-        blocked = np.zeros(num_nodes, dtype=np.bool_)
         selected: list[int] = []
-        for node in range(num_nodes):
-            if not active[node] or node == root or len(active_children[node]) != 1:
-                continue
-            parent = int(active_parent[node])
-            child_edge = next(iter(active_children[node]))
-            child = int(edge_child[child_edge])
-            if blocked[parent] or blocked[node] or blocked[child]:
-                continue
-            selected.append(node)
-            blocked[parent] = blocked[node] = blocked[child] = True
+        if schedule is ContractionSchedule.RAKE_COMPRESS:
+            blocked = np.zeros(num_nodes, dtype=np.bool_)
+            for node in range(num_nodes):
+                if not active[node] or node == root or len(active_children[node]) != 1:
+                    continue
+                parent = int(active_parent[node])
+                child_edge = next(iter(active_children[node]))
+                child = int(edge_child[child_edge])
+                if blocked[parent] or blocked[node] or blocked[child]:
+                    continue
+                selected.append(node)
+                blocked[parent] = blocked[node] = blocked[child] = True
 
         compressions: list[tuple[int, int, int, int, int]] = []
         for node in selected:

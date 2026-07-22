@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from jax_bidirectional_tree_rake_compress import (
+    ContractionSchedule,
     make_tree_contraction_plan,
     tree_contract,
     tree_contract_and_expand,
@@ -69,8 +70,9 @@ TOPOLOGIES = [
 
 
 @pytest.mark.parametrize("parents", TOPOLOGIES)
-def test_contract_and_recover_subtree_sums(parents) -> None:
-    plan = make_tree_contraction_plan(parents)
+@pytest.mark.parametrize("schedule", list(ContractionSchedule))
+def test_contract_and_recover_subtree_sums(parents, schedule) -> None:
+    plan = make_tree_contraction_plan(parents, schedule=schedule)
     values = jnp.arange(1, len(parents) + 1, dtype=jnp.float32)
     paths = jnp.zeros(plan.num_edges, dtype=jnp.float32)
     algebra = SubtreeSumAlgebra()
