@@ -247,25 +247,28 @@ def _tree_contract_scan(
     if plan.num_nodes == 1:
         return _take(node_summaries, plan.root), ChainContractionTape((), ())
 
-    edges = plan.chain_edges[::-1]
-    parents = plan.chain_nodes[-2::-1]
-    leaves = plan.chain_nodes[:0:-1]
-
-    def scan_step(nodes, instruction):
-        edge, parent, leaf = instruction
-        message, residual = algebra.rake(
-            _take(path_summaries, edge),
-            _take(nodes, leaf),
-        )
-        updated_parent = algebra.absorb_branch(_take(nodes, parent), message)
-        return _set(nodes, parent, updated_parent), residual
-
-    nodes, rake_residuals = jax.lax.scan(
-        scan_step,
-        node_summaries,
-        (edges, parents, leaves),
+    paths = jax.tree.map(
+        lambda value: value[::-1], _take(path_summaries, plan.chain_edges)
     )
-    return _take(nodes, plan.root), ChainContractionTape(rake_residuals, ())
+    parent_nodes = jax.tree.map(
+        lambda value: value[::-1], _take(node_summaries, plan.chain_nodes[:-1])
+    )
+    leaf_node = _take(node_summaries, plan.chain_nodes[-1])
+
+    def scan_step(child, instruction):
+        path, parent = instruction
+        message, residual = algebra.rake(
+            path,
+            child,
+        )
+        return algebra.absorb_branch(parent, message), residual
+
+    root, rake_residuals = jax.lax.scan(
+        scan_step,
+        leaf_node,
+        (paths, parent_nodes),
+    )
+    return root, ChainContractionTape(rake_residuals, ())
 
 
 def _tree_contract_associative_scan(
@@ -458,21 +461,25 @@ def _tree_expand_scan(
         return outputs
 
     residuals = jax.tree.map(lambda value: value[::-1], tape.rake)
+    root_output = _take(outputs, plan.root)
 
-    def scan_step(current_outputs, instruction):
-        residual, parent, leaf = instruction
-        recovered = algebra.expand_rake(
-            residual,
-            _take(current_outputs, parent),
-        )
-        return _set(current_outputs, leaf, recovered), None
+    def scan_step(parent_output, residual):
+        recovered = algebra.expand_rake(residual, parent_output)
+        return recovered, recovered
 
-    outputs, _ = jax.lax.scan(
+    _, recovered = jax.lax.scan(
         scan_step,
-        outputs,
-        (residuals, plan.chain_nodes[:-1], plan.chain_nodes[1:]),
+        root_output,
+        residuals,
     )
-    return outputs
+    ordered = jax.tree.map(
+        lambda root, descendants: jnp.concatenate(
+            (root[jnp.newaxis, ...], descendants), axis=0
+        ),
+        root_output,
+        recovered,
+    )
+    return _set(outputs, plan.chain_nodes, ordered)
 
 
 def _tree_expand_associative_scan(

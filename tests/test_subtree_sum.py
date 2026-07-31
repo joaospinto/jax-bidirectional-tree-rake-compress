@@ -156,6 +156,29 @@ def test_chain_executor_supports_dynamic_plans_vmap_and_grad(
     np.testing.assert_allclose(gradient, jnp.ones(plan.num_nodes))
 
 
+def test_sequential_chain_scans_do_not_carry_node_workspaces() -> None:
+    num_nodes = 17
+    plan = make_tree_contraction_plan(
+        [-1, *range(num_nodes - 1)],
+        schedule=ContractionSchedule.RAKE_ONLY,
+        executor=ContractionExecutor.SCAN,
+    )
+    values = jnp.ones(num_nodes, dtype=jnp.float32)
+    paths = jnp.zeros(plan.num_edges, dtype=jnp.float32)
+
+    def run(node_values, edge_values):
+        root, tape = tree_contract(plan, node_values, edge_values, SubtreeSumAlgebra())
+        return tree_expand(plan, tape, root, SubtreeSumAlgebra())
+
+    jaxpr = jax.make_jaxpr(run)(values, paths).jaxpr
+    scans = [equation for equation in jaxpr.eqns if equation.primitive.name == "scan"]
+    assert len(scans) == 2
+    for scan in scans:
+        num_constants = scan.params.get("num_consts", 0)
+        first_carry = scan.invars[num_constants]
+        assert first_carry.aval.shape == ()
+
+
 @pytest.mark.parametrize("schedule", list(ContractionSchedule))
 def test_plan_can_be_a_dynamic_jitted_argument(schedule) -> None:
     plan = make_tree_contraction_plan([-1, 0, 0, 1, 1, 2, 5], schedule=schedule)

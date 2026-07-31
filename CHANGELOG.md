@@ -2,6 +2,11 @@
 
 All notable changes will be documented in this file.
 
+## 0.3.3 — 2026-07-31
+
+- Make sequential chain contraction and expansion carry only the current local
+  value, restoring linear scaling by avoiding repeated full-tree updates.
+
 ## 0.3.2 — 2026-07-31
 
 - Parenthesize sibling-message reductions by producer readiness while
