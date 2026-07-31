@@ -2,6 +2,12 @@
 
 All notable changes will be documented in this file.
 
+## 0.3.4 — 2026-08-01
+
+- Add one-direction associative-chain primitives for computing every suffix
+  reduction or every composed root prefix without constructing a full
+  bidirectional contraction tape.
+
 ## 0.3.3 — 2026-07-31
 
 - Make sequential chain contraction and expansion carry only the current local

@@ -325,6 +325,79 @@ def _tree_contract_associative_scan(
     )
 
 
+def _chain_combine_segments(algebra):
+    def combine_segments(left, right):
+        left_paths, left_ends = left
+        right_paths, right_ends = right
+        combined, _ = _compress_values_batch(
+            left_paths, left_ends, right_paths, algebra
+        )
+        return combined, right_ends
+
+    return combine_segments
+
+
+def chain_suffix_reduce_all(
+    plan: TreeContractionPlan,
+    node_summaries: PyTree,
+    path_summaries: PyTree,
+    algebra: TreeContractionAlgebra[Any, Any, Any, Any, Any, Any],
+) -> PyTree:
+    """Return every suffix reduction of an associative-scan chain plan."""
+    _validate_leading_axis("node_summaries", node_summaries, plan.num_nodes)
+    _validate_leading_axis("path_summaries", path_summaries, plan.num_edges)
+    if plan.executor is not ContractionExecutor.ASSOCIATIVE_SCAN:
+        raise ValueError("suffix reduction requires an associative-scan plan")
+    if plan.num_nodes == 1:
+        return node_summaries
+
+    nodes = _take(node_summaries, plan.chain_nodes)
+    paths = _take(path_summaries, plan.chain_edges)
+    segment_ends = jax.tree.map(lambda value: value[1:], nodes)
+    reversed_paths = jax.tree.map(lambda value: value[::-1], paths)
+    reversed_ends = jax.tree.map(lambda value: value[::-1], segment_ends)
+    combine_segments = _chain_combine_segments(algebra)
+    reversed_suffixes, _ = jax.lax.associative_scan(
+        lambda left, right: combine_segments(right, left),
+        (reversed_paths, reversed_ends),
+    )
+    suffixes = jax.tree.map(lambda value: value[::-1], reversed_suffixes)
+    leaf = jax.tree.map(lambda value: value[-1:], nodes)
+    leaves = jax.tree.map(
+        lambda value: jnp.broadcast_to(value, (plan.num_edges, *value.shape[1:])),
+        leaf,
+    )
+    messages, _ = _rake_values_batch(suffixes, leaves, algebra)
+    prefixes = _absorb_values_batch(
+        jax.tree.map(lambda value: value[:-1], nodes), messages, algebra
+    )
+    ordered = _concatenate((prefixes, leaf))
+    outputs = _allocate_leading(node_summaries, plan.num_nodes)
+    return _set(outputs, plan.chain_nodes, ordered)
+
+
+def chain_prefix_paths(
+    plan: TreeContractionPlan,
+    node_summaries: PyTree,
+    path_summaries: PyTree,
+    algebra: TreeContractionAlgebra[Any, Any, Any, Any, Any, Any],
+) -> PyTree:
+    """Compose every root-starting path of an associative-scan chain plan."""
+    _validate_leading_axis("node_summaries", node_summaries, plan.num_nodes)
+    _validate_leading_axis("path_summaries", path_summaries, plan.num_edges)
+    if plan.executor is not ContractionExecutor.ASSOCIATIVE_SCAN:
+        raise ValueError("prefix composition requires an associative-scan plan")
+    if plan.num_nodes == 1:
+        return jax.tree.map(lambda value: value[:0], path_summaries)
+
+    nodes = _take(node_summaries, plan.chain_nodes)
+    paths = _take(path_summaries, plan.chain_edges)
+    segment_ends = jax.tree.map(lambda value: value[1:], nodes)
+    combine_segments = _chain_combine_segments(algebra)
+    prefixes, _ = jax.lax.associative_scan(combine_segments, (paths, segment_ends))
+    return prefixes
+
+
 def tree_contract(
     plan: TreeContractionPlan,
     node_summaries: PyTree,
