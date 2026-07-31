@@ -2,6 +2,11 @@
 
 All notable changes will be documented in this file.
 
+## 0.3.1 — 2026-07-31
+
+- Compress a maximal independent set of unary nodes in each round, allowing
+  adjacent compression paths to share a retained endpoint.
+
 ## 0.3.0 — 2026-07-22
 
 - Internally dependency-level rake--compress operations when this removes

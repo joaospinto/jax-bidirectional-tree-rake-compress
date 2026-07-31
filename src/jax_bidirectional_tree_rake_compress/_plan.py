@@ -500,17 +500,19 @@ def make_tree_contraction_plan(
 
         selected: list[int] = []
         if schedule is ContractionSchedule.RAKE_COMPRESS:
-            blocked = np.zeros(num_nodes, dtype=np.bool_)
+            # Compression centers form an independent set. Centers at distance
+            # two may share their retained endpoint.
+            selected_mask = np.zeros(num_nodes, dtype=np.bool_)
             for node in range(num_nodes):
                 if not active[node] or node == root or len(active_children[node]) != 1:
                     continue
                 parent = int(active_parent[node])
                 child_edge = next(iter(active_children[node]))
                 child = int(edge_child[child_edge])
-                if blocked[parent] or blocked[node] or blocked[child]:
+                if selected_mask[parent] or selected_mask[child]:
                     continue
                 selected.append(node)
-                blocked[parent] = blocked[node] = blocked[child] = True
+                selected_mask[node] = True
 
         compressions: list[tuple[int, int, int, int, int]] = []
         for node in selected:

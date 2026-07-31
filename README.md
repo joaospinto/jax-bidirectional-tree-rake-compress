@@ -157,6 +157,10 @@ Every non-root node is removed exactly once by either:
 - **compress:** eliminate a unary middle node and join its two oriented path
   summaries.
 
+Each compression round selects a maximal independent set of unary middle
+nodes. Consecutive compressions may share a retained endpoint, but their middle
+nodes, input paths, and output path slots are disjoint.
+
 Sibling rakes never race. Messages targeting the same parent are combined by
 a CPU-precomputed balanced reduction before the parent is updated. This makes
 the generic implementation independent of atomic addition and supports any

@@ -145,6 +145,12 @@ reversed level read the same boundary-output state and write distinct nodes.
 Both surviving boundary outputs are offered to `expand_compress`. An algebra
 may ignore either one.
 
+Forward compression selects a maximal independent set of unary middle nodes.
+Two operations may share a retained endpoint, but they read distinct path and
+middle-node summaries and write distinct path slots. Reverse expansion has the
+same structure: a shared endpoint is read-only and each operation restores a
+different middle-node output.
+
 The same traversal supports two superficially different recoveries:
 
 - upward recovery, where a compressed node is reconstructed from its child

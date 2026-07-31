@@ -54,6 +54,17 @@ def test_chain_has_logarithmic_number_of_rounds() -> None:
     assert stats.num_rounds <= 3 * math.ceil(math.log2(num_nodes))
 
 
+def test_compressions_may_share_a_retained_endpoint() -> None:
+    plan = make_tree_contraction_plan(
+        [-1, 0, 1, 2, 3, 4],
+        executor=ContractionExecutor.UNROLLED,
+    )
+
+    first_round = np.asarray(plan.rounds[0].compressions)
+    assert first_round[:, 0].tolist() == [1, 3]
+    assert first_round[:, 3:5].tolist() == [[0, 2], [2, 4]]
+
+
 @pytest.mark.parametrize(
     ("executor", "schedule"),
     (
@@ -155,7 +166,7 @@ def test_rake_compress_removes_global_sibling_reduction_barriers() -> None:
     plan = make_tree_contraction_plan(parents)
     stats = plan_statistics(plan)
 
-    assert stats.num_operation_levels == 20
+    assert stats.num_operation_levels == 16
     assert stats.num_operation_levels <= 2 * math.ceil(math.log2(len(parents)))
 
     node_producers = np.full(plan.num_nodes, -1)
