@@ -251,6 +251,51 @@ def test_readiness_weighted_reductions_avoid_nested_logarithmic_delays() -> None
         assert stats.num_operation_levels <= 4 * math.ceil(math.log2(len(parents)))
 
 
+def test_readiness_weighted_reductions_are_alphabetic_and_depth_bounded() -> None:
+    parents = recursively_delayed_rakes(depth=5, width=32)
+    plan = make_tree_contraction_plan(
+        parents,
+        executor=ContractionExecutor.UNROLLED,
+    )
+
+    producer_levels: dict[int, int] = {}
+    leaves: dict[int, tuple[int, ...]] = {}
+    depths: dict[int, int] = {}
+    checked_nonuniform_group = False
+
+    for level_index, level in enumerate(plan.rounds):
+        assert hasattr(level, "branch_reductions")
+        for branch in np.asarray(level.rakes[:, 3]):
+            branch = int(branch)
+            producer_levels[branch] = level_index
+            leaves[branch] = (branch,)
+            depths[branch] = 0
+
+        for destination, source in np.asarray(level.branch_reductions):
+            destination, source = int(destination), int(source)
+            left, right = leaves[destination], leaves[source]
+            assert max(left) < min(right)
+            for branch in (*left, *right):
+                depths[branch] += 1
+            leaves[destination] = (*left, *right)
+
+        for _, root in np.asarray(level.branch_absorptions):
+            group = leaves[int(root)]
+            input_levels = [producer_levels[branch] for branch in group]
+            checked_nonuniform_group |= len(set(input_levels)) > 1
+            total_weight = sum(1 << input_level for input_level in input_levels)
+            for branch, input_level in zip(group, input_levels, strict=True):
+                weight = 1 << input_level
+                ratio_bits = max(0, total_weight.bit_length() - weight.bit_length())
+                while weight << ratio_bits < total_weight:
+                    ratio_bits += 1
+                while ratio_bits and weight << (ratio_bits - 1) >= total_weight:
+                    ratio_bits -= 1
+                assert depths[branch] <= ratio_bits + 1
+
+    assert checked_nonuniform_group
+
+
 @pytest.mark.parametrize(
     ("parents", "expected_rounds"),
     [
