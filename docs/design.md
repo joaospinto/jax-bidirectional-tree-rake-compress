@@ -128,9 +128,7 @@ Expansion begins with an application-defined output at the root. It visits
 rounds backward and invokes:
 
 ```python
-middle_output = algebra.expand_compress(
-    residual, parent_output, child_output
-)
+middle_output = algebra.expand_compress(residual, parent_output, child_output)
 
 leaf_output = algebra.expand_rake(residual, parent_output)
 ```

@@ -65,9 +65,7 @@ root_p, solve_tape = tree_contract(plan, nodes_p, paths_affine, solve_alg)
 all_p = tree_expand(plan, solve_tape, root_p, solve_alg)
 
 # Root solve followed by a parallel down-sweep.
-_, transition_tape = tree_contract(
-    plan, dummy_nodes, local_transitions, transition_alg
-)
+_, transition_tape = tree_contract(plan, dummy_nodes, local_transitions, transition_alg)
 all_x = tree_expand(plan, transition_tape, x_root, transition_alg)
 ```
 
