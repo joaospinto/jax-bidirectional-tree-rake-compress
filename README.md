@@ -162,7 +162,9 @@ nodes. Consecutive compressions may share a retained endpoint, but their middle
 nodes, input paths, and output path slots are disjoint.
 
 Sibling rakes never race. Messages targeting the same parent are combined by
-a CPU-precomputed balanced reduction before the parent is updated. This makes
+a CPU-precomputed order-preserving reduction before the parent is updated. Its
+parenthesization is balanced by producer readiness, so a late message remains
+near the reduction root. This makes
 the generic implementation independent of atomic addition and supports any
 compatible associative branch operation.
 
@@ -182,8 +184,8 @@ other schedule and any branching topology. `AUTO` selects those mappings on a
 chain and `UNROLLED` otherwise. The default `UNROLLED` executor continues to
 support both schedules on every rooted tree.
 
-For bounded-degree trees, the plan has linear work and logarithmic contraction
-depth. High-degree branch reductions are balanced as well; actual device
+For arbitrary trees, the plan has linear work and logarithmic contraction
+depth. High-degree branch reductions are readiness-weighted; actual device
 kernel count and fusion depend on JAX and XLA.
 
 See [the design document](docs/design.md) for the precise invariants and

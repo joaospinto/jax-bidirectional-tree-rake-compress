@@ -35,8 +35,8 @@ class ContractionRound(NamedTuple):
 
     ``rakes`` contains ``(edge, parent, leaf)`` records. ``compressions``
     contains ``(middle, left_edge, right_edge, parent, child)`` records.
-    The remaining fields describe a balanced reduction of rake messages that
-    target the same parent.
+    The remaining fields describe a conflict-free reduction of rake messages
+    that target the same parent.
     """
 
     rakes: jnp.ndarray
@@ -270,12 +270,52 @@ def _dependency_level_plan(
             )
         levels[level][operation].append(record)
 
+    def make_reducer(branches: list[int], weights: list[int]):
+        # Alphabetic Shannon--Fano--Elias code. Removing unary trie nodes gives
+        # an ordered full binary reduction tree without increasing leaf depth.
+        trie: dict[int | str, object] = {}
+        total = sum(weights)
+        cumulative = 0
+        for index, weight in enumerate(weights):
+            ratio_bits = max(0, total.bit_length() - weight.bit_length())
+            while weight << ratio_bits < total:
+                ratio_bits += 1
+            while ratio_bits and weight << (ratio_bits - 1) >= total:
+                ratio_bits -= 1
+            length = ratio_bits + 1
+            code = ((2 * cumulative + weight) << length) // (2 * total)
+            node = trie
+            for shift in range(length - 1, -1, -1):
+                bit = (code >> shift) & 1
+                node = node.setdefault(bit, {})  # type: ignore[assignment]
+            node["leaf"] = index
+            cumulative += weight
+
+        def reduce_trie(node: dict[int | str, object]) -> int:
+            if "leaf" in node:
+                return branches[int(node["leaf"])]
+            children = [node[bit] for bit in (0, 1) if bit in node]
+            if len(children) == 1:
+                return reduce_trie(children[0])  # type: ignore[arg-type]
+            destination = reduce_trie(children[0])  # type: ignore[arg-type]
+            source = reduce_trie(children[1])  # type: ignore[arg-type]
+            level = 1 + max(branch_producers[destination], branch_producers[source])
+            branch_producers[destination] = int(level)
+            add(
+                int(level),
+                "branch_reductions",
+                (destination, source),
+            )
+            return destination
+
+        return lambda: reduce_trie(trie)
+
     for (
         rakes,
         compressions,
-        reduction_stages,
-        reduction_roots,
-        reduction_parents,
+        _reduction_stages,
+        _reduction_roots,
+        _reduction_parents,
     ) in host_rounds:
         round_branches = np.arange(
             len(branch_producers),
@@ -291,20 +331,23 @@ def _dependency_level_plan(
                 (int(edge), int(parent), int(leaf), int(branch)),
             )
 
-        for stage in reduction_stages:
-            for destination, source in stage:
-                destination = int(round_branches[destination])
-                source = int(round_branches[source])
-                level = 1 + max(branch_producers[destination], branch_producers[source])
-                branch_producers[destination] = int(level)
-                add(
-                    int(level),
-                    "branch_reductions",
-                    (destination, source),
-                )
+        # Parenthesize each ordered sibling reduction by producer readiness.
+        # A branch produced at level t has weight 2**t. An alphabetic weighted
+        # code preserves order while keeping a late message close to the
+        # reduction root; a merely count-balanced tree can add log(k) levels
+        # to an already critical message.
+        groups: dict[int, list[int]] = defaultdict(list)
+        for (_, parent, _), branch in zip(rakes, round_branches, strict=True):
+            groups[int(parent)].append(int(branch))
 
-        for root, parent in zip(reduction_roots, reduction_parents, strict=True):
-            branch = int(round_branches[root])
+        roots: list[tuple[int, int]] = []
+        for parent in sorted(groups):
+            branches = groups[parent]
+            weights = [1 << branch_producers[branch] for branch in branches]
+            reduce = make_reducer(branches, weights)
+            roots.append((parent, reduce()))
+
+        for parent, branch in roots:
             parent = int(parent)
             level = 1 + max(branch_producers[branch], node_producers[parent])
             node_producers[parent] = int(level)

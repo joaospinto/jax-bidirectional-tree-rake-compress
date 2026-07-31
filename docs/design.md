@@ -11,7 +11,7 @@ slot per non-root node, and repeatedly plans:
 
 1. all currently active leaf rakes;
 2. a conflict-free set of unary-node compressions;
-3. balanced reductions for sibling rake messages.
+3. readiness-weighted reductions for sibling rake messages.
 
 The result contains only integer JAX arrays. Planning uses NumPy and ordinary
 Python data structures; it is never called by `tree_contract` or
@@ -74,7 +74,9 @@ boundary and an arbitrary fixed-shape residual for later expansion.
 combined = algebra.combine_branches(left, right)
 ```
 
-Messages targeting the same parent are reduced in a balanced order. The
+Messages targeting the same parent are reduced in an order-preserving
+alphabetic tree weighted by their producer levels. This prevents a late input
+from accumulating a logarithmic number of additional combinations. The
 operation must be associative. To make results independent of sibling order
 and contraction schedule it should also be commutative.
 

@@ -161,6 +161,31 @@ def delayed_star(groups: int, width: int) -> list[int]:
     return parents
 
 
+def recursively_delayed_rakes(depth: int, width: int) -> list[int]:
+    """Nest wide rakes whose distinguished branch is already critical."""
+    parents = [-1]
+
+    def chain(parent: int, length: int, continuation=None) -> None:
+        for _ in range(length):
+            parents.append(parent)
+            parent = len(parents) - 1
+        if continuation is not None:
+            continuation(parent)
+
+    def gadget(parent: int, level: int) -> None:
+        parents.append(parent)
+        root = len(parents) - 1
+        if level == 0:
+            parents.append(root)
+            return
+        chain(root, 2 ** (level - 1), lambda node: gadget(node, level - 1))
+        for _ in range(width):
+            chain(root, 2**level)
+
+    gadget(0, depth)
+    return parents
+
+
 def test_rake_compress_removes_global_sibling_reduction_barriers() -> None:
     parents = delayed_star(groups=6, width=16)
     plan = make_tree_contraction_plan(parents)
@@ -212,6 +237,18 @@ def test_rake_compress_removes_global_sibling_reduction_barriers() -> None:
         branch_producers[reductions[:, 0]] = level_index
         node_producers[absorptions[:, 0]] = level_index
         path_producers[compressions[:, 1]] = level_index
+
+
+def test_readiness_weighted_reductions_avoid_nested_logarithmic_delays() -> None:
+    for depth in range(2, 8):
+        parents = recursively_delayed_rakes(depth, 2**depth)
+        plan = make_tree_contraction_plan(
+            parents,
+            executor=ContractionExecutor.UNROLLED,
+        )
+        stats = plan_statistics(plan)
+
+        assert stats.num_operation_levels <= 4 * math.ceil(math.log2(len(parents)))
 
 
 @pytest.mark.parametrize(

@@ -2,6 +2,12 @@
 
 All notable changes will be documented in this file.
 
+## 0.3.2 — 2026-07-31
+
+- Parenthesize sibling-message reductions by producer readiness while
+  preserving sibling order, preventing nested high-degree rakes from adding a
+  logarithmic delay at every contraction scale.
+
 ## 0.3.1 — 2026-07-31
 
 - Compress a maximal independent set of unary nodes in each round, allowing
