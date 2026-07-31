@@ -2,6 +2,12 @@
 
 All notable changes will be documented in this file.
 
+## 0.3.5 — 2026-08-01
+
+- Consolidate associative-chain validation, ordering, composition, and
+  directional scans behind shared internals, removing duplicated scaffolding
+  between prefix-only, suffix-only, and bidirectional operations.
+
 ## 0.3.4 — 2026-08-01
 
 - Add one-direction associative-chain primitives for computing every suffix
