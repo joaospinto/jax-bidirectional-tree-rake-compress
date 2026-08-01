@@ -10,7 +10,6 @@ import pytest
 from jax_bidirectional_tree_rake_compress import (
     ContractionExecutor,
     ContractionSchedule,
-    chain_suffix_reduce_all,
     make_tree_contraction_plan,
     tree_contract,
     tree_contract_and_expand,
@@ -86,27 +85,6 @@ CHAIN_EXECUTORS = (
     (ContractionExecutor.SCAN, ContractionSchedule.RAKE_ONLY),
     (ContractionExecutor.ASSOCIATIVE_SCAN, ContractionSchedule.RAKE_COMPRESS),
 )
-
-
-def test_chain_suffix_reduce_all_recovers_every_subtree() -> None:
-    parents = [2, 3, 1, -1]
-    plan = make_tree_contraction_plan(
-        parents,
-        schedule=ContractionSchedule.RAKE_COMPRESS,
-        executor=ContractionExecutor.ASSOCIATIVE_SCAN,
-    )
-    values = jnp.arange(1, plan.num_nodes + 1, dtype=jnp.float32)
-    paths = jnp.zeros(plan.num_edges, dtype=jnp.float32)
-
-    actual = jax.jit(
-        lambda nodes, edges: chain_suffix_reduce_all(
-            plan, nodes, edges, SubtreeSumAlgebra()
-        )
-    )(values, paths)
-    expected = sequential_subtree_sums(
-        np.asarray(parents), np.asarray(values), int(plan.root)
-    )
-    np.testing.assert_allclose(actual, expected)
 
 
 @pytest.mark.parametrize("parents", TOPOLOGIES)

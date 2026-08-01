@@ -10,7 +10,6 @@ import pytest
 from jax_bidirectional_tree_rake_compress import (
     ContractionExecutor,
     ContractionSchedule,
-    chain_prefix_paths,
     make_tree_contraction_plan,
     tree_contract,
     tree_expand,
@@ -46,39 +45,6 @@ class AffineBroadcastAlgebra:
     def expand_rake(self, residual, parent_output):
         matrix, offset = residual
         return matrix @ parent_output + offset
-
-
-def test_chain_prefix_paths_recover_affine_broadcast() -> None:
-    plan = make_tree_contraction_plan(
-        [2, 3, 1, -1],
-        schedule=ContractionSchedule.RAKE_COMPRESS,
-        executor=ContractionExecutor.ASSOCIATIVE_SCAN,
-    )
-    dimension = 3
-    key = jax.random.key(19)
-    matrix_key, offset_key, root_key = jax.random.split(key, 3)
-    matrices = jnp.eye(dimension)[None, :, :] + 0.1 * jax.random.normal(
-        matrix_key, (plan.num_edges, dimension, dimension)
-    )
-    offsets = jax.random.normal(offset_key, (plan.num_edges, dimension))
-    root = jax.random.normal(root_key, (dimension,))
-    nodes = jnp.zeros(plan.num_nodes, dtype=jnp.float32)
-    algebra = AffineBroadcastAlgebra()
-
-    prefixes = jax.jit(
-        lambda values, paths: chain_prefix_paths(plan, values, paths, algebra)
-    )(nodes, (matrices, offsets))
-    children = jax.vmap(algebra.expand_rake)(
-        prefixes,
-        jnp.broadcast_to(root, (plan.num_edges, dimension)),
-    )
-    actual = jnp.zeros((plan.num_nodes, dimension), dtype=root.dtype)
-    actual = actual.at[plan.root].set(root)
-    actual = actual.at[plan.chain_nodes[1:]].set(children)
-    expected = sequential_affine_broadcast(
-        plan, np.asarray(matrices), np.asarray(offsets), np.asarray(root)
-    )
-    np.testing.assert_allclose(actual, expected, rtol=2e-5, atol=2e-5)
 
 
 def sequential_affine_broadcast(plan, matrices, offsets, root_value):

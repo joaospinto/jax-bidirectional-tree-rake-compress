@@ -2,6 +2,11 @@
 
 All notable changes will be documented in this file.
 
+## 0.3.6 — 2026-08-01
+
+- Remove the chain-specific one-direction APIs introduced in v0.3.4 and
+  restore the v0.3.3 public API and implementation.
+
 ## 0.3.5 — 2026-08-01
 
 - Consolidate associative-chain validation, ordering, composition, and
